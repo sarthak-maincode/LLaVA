@@ -2,52 +2,26 @@ FROM mcr.microsoft.com/devcontainers/base:ubuntu-20.04
 
 SHELL [ "bash", "-c" ]
 
-# update apt and install packages
-RUN apt update && \
-    apt install -yq \
-        ffmpeg \
-        dkms \
-        build-essential
+# Install essential packages
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+        build-essential \
+        wget \
+        curl \
+        git \
+        git-lfs && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# add user tools
-RUN sudo apt install -yq \
-        jq \
-        jp \
-        tree \
-        tldr
-
-# add git-lfs and install
-RUN curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | sudo bash && \
-    sudo apt-get install -yq git-lfs && \
-    git lfs install
-
-############################################
-# Setup user
-############################################
+# Initialize git-lfs
+RUN git lfs install
 
 USER vscode
 
-# install azcopy, a tool to copy to/from blob storage
-# for more info: https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azcopy-blobs-upload#upload-a-file
+# Setup conda for vscode user
 RUN cd /tmp && \
-    wget https://azcopyvnext.azureedge.net/release20230123/azcopy_linux_amd64_10.17.0.tar.gz && \
-    tar xvf azcopy_linux_amd64_10.17.0.tar.gz && \
-    mkdir -p ~/.local/bin && \
-    mv azcopy_linux_amd64_10.17.0/azcopy ~/.local/bin && \
-    chmod +x ~/.local/bin/azcopy && \
-    rm -rf azcopy_linux_amd64*
-
-# Setup conda
-RUN cd /tmp && \
-    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && \
-    bash ./Miniconda3-latest-Linux-x86_64.sh -b && \
+    wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && \
+    bash ./Miniconda3-latest-Linux-x86_64.sh -b -p /home/vscode/miniconda3 && \
     rm ./Miniconda3-latest-Linux-x86_64.sh
 
-# Install dotnet
-RUN cd /tmp && \
-    wget https://dot.net/v1/dotnet-install.sh && \
-    chmod +x dotnet-install.sh && \
-    ./dotnet-install.sh --channel 7.0 && \
-    ./dotnet-install.sh --channel 3.1 && \
-    rm ./dotnet-install.sh
-
+# Add conda to PATH
+ENV PATH="/home/vscode/miniconda3/bin:${PATH}"

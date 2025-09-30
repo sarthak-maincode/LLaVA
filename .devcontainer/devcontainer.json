@@ -56,7 +56,9 @@
             ]
         }
     },
-    "mounts": [],
+    "mounts": [
+        "source=${localWorkspaceFolder}/playground,target=/workspaces/LLaVA/playground,type=bind,consistency=cached"
+    ],
     "runArgs": [
         "--gpus",
         "all",

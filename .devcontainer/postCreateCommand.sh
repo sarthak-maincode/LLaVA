@@ -23,8 +23,15 @@ source /home/vscode/miniconda3/bin/activate
 conda create -y -q -n llava python=3.10
 conda activate llava
 
-# Install Nvidia Cuda Compiler
-conda install -y -c nvidia cuda-compiler
+# Install Nvidia CUDA Toolkit 12.8 (includes nvcc for DeepSpeed)
+conda install -y -c nvidia/label/cuda-12.8.0 cuda-toolkit
+
+# Set CUDA environment variables for DeepSpeed and flash-attn compilation
+export CUDA_HOME=$CONDA_PREFIX
+export PATH=$CUDA_HOME/bin:$PATH
+
+# Install PyTorch with CUDA 12.8 support for B200 GPU
+pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu128
 
 pip install pre-commit==3.0.2
 
@@ -35,6 +42,12 @@ pip install -e .
 # Install additional packages for training
 pip install -e ".[train]"
 pip install flash-attn --no-build-isolation
+
+# Add CUDA environment variables to shell profiles for persistence
+echo "export CUDA_HOME=\$CONDA_PREFIX" >> ~/.zshrc
+echo "export PATH=\$CUDA_HOME/bin:\$PATH" >> ~/.zshrc
+echo "export CUDA_HOME=\$CONDA_PREFIX" >> ~/.bashrc
+echo "export PATH=\$CUDA_HOME/bin:\$PATH" >> ~/.bashrc
 
 # Download checkpoints to location outside of the repo
 git clone https://huggingface.co/liuhaotian/llava-v1.5-7b ~/llava-v1.5-7b
