@@ -53,6 +53,8 @@ IS_TOKENIZER_GREATER_THAN_0_14 = version.parse(tokenizers.__version__) >= versio
 @dataclass
 class ModelArguments:
     model_name_or_path: Optional[str] = field(default="facebook/opt-125m")
+    revision: Optional[str] = field(default=None)
+    trust_remote_code: bool = field(default=False)
     version: Optional[str] = field(default="v0")
     freeze_backbone: bool = field(default=False)
     tune_mm_mlp_adapter: bool = field(default=False)
@@ -399,10 +401,16 @@ def preprocess_llama_2(
 
         if cur_len < tokenizer.model_max_length:
             if cur_len != total_len:
-                target[:] = IGNORE_INDEX
+                # Instead of ignoring the entire sample, just adjust the target length
+                if cur_len < total_len:
+                    # Pad with IGNORE_INDEX if our calculation is shorter
+                    target[cur_len:] = IGNORE_INDEX
+                else:
+                    # Truncate if our calculation is longer
+                    target = target[:total_len]
                 print(
                     f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
-                    f" (ignored)"
+                    f" (adjusted)"
                 )
 
     return dict(
@@ -474,7 +482,8 @@ def preprocess_v1(
                 round_len = len(tokenizer(rou).input_ids)
                 instruction_len = len(tokenizer(parts[0]).input_ids) - 2
 
-            if i != 0 and not tokenizer.legacy and IS_TOKENIZER_GREATER_THAN_0_14:
+            # Matilda uses GPT2Tokenizer with legacy=True, so no adjustment needed
+            if i != 0 and not getattr(tokenizer, 'legacy', True) and IS_TOKENIZER_GREATER_THAN_0_14:
                 round_len -= 1
                 instruction_len -= 1
 
@@ -485,10 +494,16 @@ def preprocess_v1(
 
         if cur_len < tokenizer.model_max_length:
             if cur_len != total_len:
-                target[:] = IGNORE_INDEX
+                # Instead of ignoring the entire sample, just adjust the target length
+                if cur_len < total_len:
+                    # Pad with IGNORE_INDEX if our calculation is shorter
+                    target[cur_len:] = IGNORE_INDEX
+                else:
+                    # Truncate if our calculation is longer
+                    target = target[:total_len]
                 print(
                     f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
-                    f" (ignored)"
+                    f" (adjusted)"
                 )
 
     return dict(
@@ -562,6 +577,7 @@ def preprocess_mpt(
                 round_len = len(tokenizer(rou).input_ids)
                 instruction_len = len(tokenizer(parts[0]).input_ids) - 1
 
+            # Matilda uses GPT2Tokenizer with legacy=True, so no adjustment needed
             if i != 0 and getattr(tokenizer, 'legacy', False) and IS_TOKENIZER_GREATER_THAN_0_14:
                 round_len += 1
                 instruction_len += 1
@@ -573,10 +589,16 @@ def preprocess_mpt(
 
         if cur_len < tokenizer.model_max_length:
             if cur_len != total_len:
-                target[:] = IGNORE_INDEX
+                # Instead of ignoring the entire sample, just adjust the target length
+                if cur_len < total_len:
+                    # Pad with IGNORE_INDEX if our calculation is shorter
+                    target[cur_len:] = IGNORE_INDEX
+                else:
+                    # Truncate if our calculation is longer
+                    target = target[:total_len]
                 print(
                     f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
-                    f" (ignored)"
+                    f" (adjusted)"
                 )
 
     return dict(
@@ -698,24 +720,38 @@ class LazySupervisedDataset(Dataset):
             image_file = self.list_data_dict[i]['image']
             image_folder = self.data_args.image_folder
             processor = self.data_args.image_processor
-            image = Image.open(os.path.join(image_folder, image_file)).convert('RGB')
-            if self.data_args.image_aspect_ratio == 'pad':
-                def expand2square(pil_img, background_color):
-                    width, height = pil_img.size
-                    if width == height:
-                        return pil_img
-                    elif width > height:
-                        result = Image.new(pil_img.mode, (width, width), background_color)
-                        result.paste(pil_img, (0, (width - height) // 2))
-                        return result
-                    else:
-                        result = Image.new(pil_img.mode, (height, height), background_color)
-                        result.paste(pil_img, ((height - width) // 2, 0))
-                        return result
-                image = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
-                image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
-            else:
-                image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+            image_path = os.path.join(image_folder, image_file)
+
+            # Check if image file exists and handle missing images gracefully
+            if not os.path.exists(image_path):
+                print(f"Warning: Image file not found: {image_path}. Skipping this sample.")
+                # Return None to indicate this sample should be skipped
+                return None
+
+            try:
+                image = Image.open(image_path).convert('RGB')
+                if self.data_args.image_aspect_ratio == 'pad':
+                    def expand2square(pil_img, background_color):
+                        width, height = pil_img.size
+                        if width == height:
+                            return pil_img
+                        elif width > height:
+                            result = Image.new(pil_img.mode, (width, width), background_color)
+                            result.paste(pil_img, (0, (width - height) // 2))
+                            return result
+                        else:
+                            result = Image.new(pil_img.mode, (height, height), background_color)
+                            result.paste(pil_img, ((height - width) // 2, 0))
+                            return result
+                    image = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
+                    image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+                else:
+                    image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+            except Exception as e:
+                print(f"Warning: Failed to load image {image_path}: {e}. Skipping this sample.")
+                # Return None to indicate this sample should be skipped
+                return None
+
             sources = preprocess_multimodal(
                 copy.deepcopy([e["conversations"] for e in sources]),
                 self.data_args)
@@ -746,6 +782,17 @@ class DataCollatorForSupervisedDataset(object):
     tokenizer: transformers.PreTrainedTokenizer
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
+        # Filter out None instances (failed image loads)
+        instances = [instance for instance in instances if instance is not None]
+
+        if not instances:
+            # If all instances are None, return a minimal batch
+            return dict(
+                input_ids=torch.tensor([]),
+                labels=torch.tensor([]),
+                attention_mask=torch.tensor([]),
+            )
+
         input_ids, labels = tuple([instance[key] for instance in instances]
                                   for key in ("input_ids", "labels"))
         input_ids = torch.nn.utils.rnn.pad_sequence(
@@ -824,13 +871,34 @@ def train(attn_implementation=None):
                 **bnb_model_from_pretrained_args
             )
         else:
-            model = LlavaLlamaForCausalLM.from_pretrained(
+            # Check model type from config
+            config = transformers.AutoConfig.from_pretrained(
                 model_args.model_name_or_path,
-                cache_dir=training_args.cache_dir,
-                attn_implementation=attn_implementation,
-                torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
-                **bnb_model_from_pretrained_args
+                revision=model_args.revision,
+                trust_remote_code=model_args.trust_remote_code,
+                cache_dir=training_args.cache_dir
             )
+
+            if config.model_type == 'olmo2':
+                model = LlavaOlmo2ForCausalLM.from_pretrained(
+                    model_args.model_name_or_path,
+                    revision=model_args.revision,
+                    trust_remote_code=model_args.trust_remote_code,
+                    cache_dir=training_args.cache_dir,
+                    attn_implementation=attn_implementation,
+                    torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                    **bnb_model_from_pretrained_args
+                )
+            else:
+                model = LlavaLlamaForCausalLM.from_pretrained(
+                    model_args.model_name_or_path,
+                    revision=model_args.revision,
+                    trust_remote_code=model_args.trust_remote_code,
+                    cache_dir=training_args.cache_dir,
+                    attn_implementation=attn_implementation,
+                    torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                    **bnb_model_from_pretrained_args
+                )
     else:
         model = transformers.LlamaForCausalLM.from_pretrained(
             model_args.model_name_or_path,
@@ -885,11 +953,30 @@ def train(attn_implementation=None):
     else:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
+            revision=model_args.revision,
+            trust_remote_code=model_args.trust_remote_code,
             cache_dir=training_args.cache_dir,
             model_max_length=training_args.model_max_length,
             padding_side="right",
             use_fast=False,
         )
+
+        # Fix tokenizer legacy attribute for Matilda/OLMO2 compatibility
+        # Matilda uses GPT2Tokenizer with custom chat template
+        if not hasattr(tokenizer, 'legacy'):
+            tokenizer.legacy = True  # GPT2Tokenizer should use legacy=True
+
+        # Set custom chat template for Matilda model
+        if 'matilda' in model_args.model_name_or_path.lower() or 'olmo' in model_args.model_name_or_path.lower():
+            tokenizer.chat_template = """{{ bos_token }}{% for message in messages %}{% if message['role'] == 'system' %}{{ '<|system|>
+' + message['content'] + '
+' }}{% elif message['role'] == 'user' %}{{ '<|user|>
+' + message['content'] + '
+' }}{% elif message['role'] == 'assistant' %}{% if not loop.last %}{{ '<|assistant|>
+'  + message['content'] + eos_token + '
+' }}{% else %}{{ '<|assistant|>
+'  + message['content'] + eos_token }}{% endif %}{% endif %}{% if loop.last and add_generation_prompt %}{{ '<|assistant|>
+' }}{% endif %}{% endfor %}"""
 
     if model_args.version == "v0":
         if tokenizer.pad_token is None:
@@ -901,7 +988,10 @@ def train(attn_implementation=None):
     elif model_args.version == "v0.5":
         tokenizer.pad_token = tokenizer.unk_token
     else:
-        tokenizer.pad_token = tokenizer.unk_token
+        if tokenizer.unk_token:
+            tokenizer.pad_token = tokenizer.unk_token
+        else: # use matilda/olmo2
+            tokenizer.legacy = True
         if model_args.version in conversation_lib.conv_templates:
             conversation_lib.default_conversation = conversation_lib.conv_templates[model_args.version]
         else:
@@ -912,7 +1002,7 @@ def train(attn_implementation=None):
             model_args=model_args,
             fsdp=training_args.fsdp
         )
-        
+
         vision_tower = model.get_vision_tower()
         vision_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
 
